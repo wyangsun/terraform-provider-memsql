@@ -3,10 +3,10 @@ package mysql
 import (
 	"context"
 	"fmt"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"log"
-	"regexp"
 	"strings"
+
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 
 	"github.com/hashicorp/go-version"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
@@ -234,61 +234,22 @@ func ReadUser(ctx context.Context, d *schema.ResourceData, meta interface{}) dia
 	if err != nil {
 		return diag.FromErr(err)
 	}
-	requiredVersion, _ := version.NewVersion("5.7.0")
-	if getVersionFromMeta(ctx, meta).GreaterThan(requiredVersion) {
-		stmt := "SHOW CREATE USER ?@?"
+	stmtSQL := fmt.Sprintf("SELECT USER from information_schema.USERS WHERE USER='%s'", d.Get("user").(string))
 
-		var createUserStmt string
-		err := db.QueryRowContext(ctx, stmt, d.Get("user").(string), d.Get("host").(string)).Scan(&createUserStmt)
-		if err != nil {
-			if mysqlErrorNumber(err) == unknownUserErrCode {
-				d.SetId("")
-				return nil
-			}
-			return diag.Errorf("failed getting version: %v", err)
-		}
+	log.Println("Executing statement:", stmtSQL)
 
-		// Examples of create user:
-		// CREATE USER 'some_app'@'%' IDENTIFIED WITH 'mysql_native_password' AS '*0something' REQUIRE NONE PASSWORD EXPIRE DEFAULT ACCOUNT UNLOCK
-		// CREATE USER `jdoe-tf-test-47`@`example.com` IDENTIFIED WITH 'caching_sha2_password' REQUIRE NONE PASSWORD EXPIRE DEFAULT ACCOUNT UNLOCK PASSWORD HISTORY DEFAULT PASSWORD REUSE INTERVAL DEFAULT PASSWORD REQUIRE CURRENT DEFAULT
-		// CREATE USER `jdoe`@`example.com` IDENTIFIED WITH 'caching_sha2_password' AS '$A$005$i`xay#fG/\' TrbkNA82' REQUIRE NONE PASSWORD
-		re := regexp.MustCompile("^CREATE USER ['`]([^'`]*)['`]@['`]([^'`]*)['`] IDENTIFIED WITH ['`]([^'`]*)['`] (?:AS '((?:.*?[^\\\\])?)' )?REQUIRE ([^ ]*)")
-		if m := re.FindStringSubmatch(createUserStmt); len(m) == 6 {
-			d.Set("user", m[1])
-			d.Set("host", m[2])
-			d.Set("auth_plugin", m[3])
-			d.Set("auth_string_hashed", m[4])
-			d.Set("tls_option", m[5])
-			return nil
-		}
+	rows, err := db.QueryContext(ctx, stmtSQL)
+	if err != nil {
+		return diag.Errorf("failed getting user from DB: %v", err)
+	}
+	defer rows.Close()
 
-		// Try 2 - just whether the user is there.
-		re2 := regexp.MustCompile("^CREATE USER")
-		if m := re2.FindStringSubmatch(createUserStmt); m != nil {
-			// Ok, we have at least something - it's probably in MariaDB.
-			return nil
-		}
-		return diag.Errorf("Create user couldn't be parsed - it is %s", createUserStmt)
-	} else {
-		// Worse user detection, only for compat with MySQL 5.6
-		stmtSQL := fmt.Sprintf("SELECT USER FROM mysql.user WHERE USER='%s'",
-			d.Get("user").(string))
-
-		log.Println("Executing statement:", stmtSQL)
-
-		rows, err := db.QueryContext(ctx, stmtSQL)
-		if err != nil {
-			return diag.Errorf("failed getting user from DB: %v", err)
-		}
-		defer rows.Close()
-
-		if !rows.Next() && rows.Err() == nil {
-			d.SetId("")
-			return nil
-		}
-		if rows.Err() != nil {
-			return diag.Errorf("failed getting rows: %v", rows.Err())
-		}
+	if !rows.Next() && rows.Err() == nil {
+		d.SetId("")
+		return nil
+	}
+	if rows.Err() != nil {
+		return diag.Errorf("failed getting rows: %v", rows.Err())
 	}
 	return nil
 }
@@ -340,3 +301,4 @@ func NewEmptyStringSuppressFunc(k, old, new string, d *schema.ResourceData) bool
 
 	return false
 }
+
